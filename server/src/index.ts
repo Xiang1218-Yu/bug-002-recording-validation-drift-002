@@ -66,15 +66,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (url.pathname === '/api/recordings' && request.method === 'POST') {
-    const input = await readJson<{
-      name?: string;
-      request: { method: HttpMethod; path: string };
-      response: { statusCode: number; headers?: Record<string, string>; body?: string };
-    }>(request);
-    if (!input.request?.method || !input.request?.path || !input.response?.statusCode) {
-      throw new HttpError(400, '录制请求需要 request.method、request.path 和 response.statusCode');
-    }
-    sendJson(response, 201, { data: store.record(input) });
+    const input = await readJson<RecordingInput>(request);
+    const normalizedRecording = normalizeRecordingInput(input);
+    sendJson(response, 201, { data: store.record(normalizedRecording) });
     return;
   }
 
@@ -143,6 +137,40 @@ function validateRouteInput(input: MockRouteInput): MockRouteInput {
     responseHeaders: input.responseHeaders || {},
     responseBody: input.responseBody || '',
     description: input.description || ''
+  };
+}
+
+type RecordingInput = {
+  name?: string;
+  request: { method: HttpMethod; path: string };
+  response: { statusCode: number; headers?: Record<string, string>; body?: string };
+};
+
+function normalizeRecordingInput(input: RecordingInput): RecordingInput {
+  if (!input?.request || !input?.response) {
+    throw new HttpError(400, '录制请求必须包含 request 和 response');
+  }
+  if (!input.request.path?.trim()) {
+    throw new HttpError(400, '录制请求的 path 不能为空');
+  }
+  const statusCode = Number(input.response.statusCode);
+  if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) {
+    throw new HttpError(400, '录制响应的 statusCode 必须是 100-599 的整数');
+  }
+  // Defect seed: unlike create/update, method is not normalized or validated
+  // and path is deliberately passed through without canonicalization.
+  return {
+    ...input,
+    request: {
+      method: input.request.method,
+      path: input.request.path
+    },
+    response: {
+      ...input.response,
+      statusCode,
+      headers: input.response.headers || {},
+      body: input.response.body || ''
+    }
   };
 }
 
