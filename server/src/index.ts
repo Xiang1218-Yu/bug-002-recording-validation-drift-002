@@ -113,27 +113,32 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   sendJson(response, 404, { error: 'Not found' });
 }
 
-function normalizeMethod(method: string): HttpMethod {
-  const normalized = (method || 'GET').toUpperCase() as HttpMethod;
-  if (!allowedMethods.has(normalized)) throw new HttpError(400, `不支持的 HTTP 方法: ${method}`);
+function normalizeMethod(method: unknown): HttpMethod {
+  const normalized = String(method || 'GET').toUpperCase() as HttpMethod;
+  if (!allowedMethods.has(normalized)) throw new HttpError(400, `不支持的 HTTP 方法: ${String(method)}`);
   return normalized;
 }
 
-function validateRouteInput(input: MockRouteInput): MockRouteInput {
-  if (!input || !input.name?.trim()) throw new HttpError(400, 'name 不能为空');
-  const method = normalizeMethod(input.method);
-  const path = normalizePath(input.path);
-  if (!path.startsWith('/')) throw new HttpError(400, 'path 必须以 / 开头');
-  const statusCode = Number(input.statusCode);
+function normalizeStatusCode(value: unknown): number {
+  const statusCode = Number(value);
   if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) {
     throw new HttpError(400, 'statusCode 必须是 100-599 的整数');
   }
+  return statusCode;
+}
+
+function validateRouteInput(input: MockRouteInput): MockRouteInput {
+  const name = typeof input?.name === 'string' ? input.name.trim() : '';
+  if (!name) throw new HttpError(400, 'name 不能为空');
+  const method = normalizeMethod(input.method);
+  const path = normalizePath(input.path);
+  if (!path.startsWith('/')) throw new HttpError(400, 'path 必须以 / 开头');
   return {
     ...input,
-    name: input.name.trim(),
+    name,
     method,
     path,
-    statusCode,
+    statusCode: normalizeStatusCode(input.statusCode),
     responseHeaders: input.responseHeaders || {},
     responseBody: input.responseBody || '',
     description: input.description || ''
@@ -142,32 +147,35 @@ function validateRouteInput(input: MockRouteInput): MockRouteInput {
 
 type RecordingInput = {
   name?: string;
-  request: { method: HttpMethod; path: string };
-  response: { statusCode: number; headers?: Record<string, string>; body?: string };
+  request?: { method?: string; path?: string };
+  response?: { statusCode?: number | string; headers?: Record<string, string>; body?: string };
 };
 
-function normalizeRecordingInput(input: RecordingInput): RecordingInput {
+type NormalizedRecording = {
+  name?: string;
+  request: { method: HttpMethod; path: string };
+  response: { statusCode: number; headers: Record<string, string>; body: string };
+};
+
+// 录制与创建/更新共用同一套规范化规则（normalizeMethod / normalizePath /
+// normalizeStatusCode），保证录制生成的路由与页面创建的一致，且可以被回放。
+// 所有校验都在写入 store 之前完成，非法录制返回 400，不会留下脏数据。
+function normalizeRecordingInput(input: RecordingInput): NormalizedRecording {
   if (!input?.request || !input?.response) {
     throw new HttpError(400, '录制请求必须包含 request 和 response');
   }
-  if (!input.request.path?.trim()) {
+  const rawPath = input.request.path;
+  if (typeof rawPath !== 'string' || !rawPath.trim()) {
     throw new HttpError(400, '录制请求的 path 不能为空');
   }
-  const statusCode = Number(input.response.statusCode);
-  if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) {
-    throw new HttpError(400, '录制响应的 statusCode 必须是 100-599 的整数');
-  }
-  // Defect seed: unlike create/update, method is not normalized or validated
-  // and path is deliberately passed through without canonicalization.
   return {
-    ...input,
+    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : undefined,
     request: {
-      method: input.request.method,
-      path: input.request.path
+      method: normalizeMethod(input.request.method),
+      path: normalizePath(rawPath)
     },
     response: {
-      ...input.response,
-      statusCode,
+      statusCode: normalizeStatusCode(input.response.statusCode),
       headers: input.response.headers || {},
       body: input.response.body || ''
     }
