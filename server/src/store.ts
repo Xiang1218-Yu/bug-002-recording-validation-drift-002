@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { MockRoute, MockRouteInput } from './types.js';
+import type { MockRoute, MockRouteInput, NormalizedRecordingInput } from './types.js';
 
 const now = () => new Date().toISOString();
 
@@ -47,9 +47,9 @@ export class MockStore {
       id: randomUUID(),
       name: input.name,
       method: input.method,
-      path: normalizePath(input.path),
+      path: input.path,
       statusCode: input.statusCode,
-      responseHeaders: input.responseHeaders ?? { 'content-type': 'application/json' },
+      responseHeaders: input.responseHeaders ?? defaultResponseHeaders(),
       responseBody: input.responseBody ?? '',
       description: input.description ?? '',
       createdAt: timestamp,
@@ -66,7 +66,7 @@ export class MockStore {
       ...current,
       name: input.name,
       method: input.method,
-      path: normalizePath(input.path),
+      path: input.path,
       statusCode: input.statusCode,
       responseHeaders: input.responseHeaders ?? {},
       responseBody: input.responseBody ?? '',
@@ -81,11 +81,7 @@ export class MockStore {
     return this.routes.delete(id);
   }
 
-  record(input: {
-    name?: string;
-    request: { method: MockRouteInput['method']; path: string };
-    response: { statusCode: number; headers?: Record<string, string>; body?: string };
-  }): MockRoute {
+  record(input: NormalizedRecordingInput): MockRoute {
     return this.create({
       name: input.name || `录制 ${input.request.method} ${input.request.path}`,
       method: input.request.method,
@@ -98,9 +94,6 @@ export class MockStore {
   }
 }
 
-export function normalizePath(path: string): string {
-  if (!path) return '/';
-  const withoutQuery = path.split('?')[0] || '/';
-  const withLeadingSlash = withoutQuery.startsWith('/') ? withoutQuery : `/${withoutQuery}`;
-  return withLeadingSlash.length > 1 ? withLeadingSlash.replace(/\/+$/, '') : '/';
+function defaultResponseHeaders(): Record<string, string> {
+  return { 'content-type': 'application/json' };
 }

@@ -1,12 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { findMatchingRoute } from './matcher.js';
 import { HttpError, methodFromRequest, readJson, sendJson, sendText } from './http.js';
-import { MockStore, normalizePath } from './store.js';
-import type { HttpMethod, MockRouteInput, ReplayRequest } from './types.js';
+import { MockStore } from './store.js';
+import {
+  normalizeHttpMethod,
+  normalizeRecordingInput,
+  normalizeReplayRequest,
+  normalizeRouteInput
+} from './validation.js';
 
 const port = Number(process.env.PORT || 4000);
 const store = new MockStore();
-const allowedMethods = new Set<HttpMethod>(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']);
 
 const server = createServer(async (request, response) => {
   try {
@@ -38,7 +42,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (url.pathname === '/api/mocks' && request.method === 'POST') {
-    const input = validateRouteInput(await readJson<MockRouteInput>(request));
+    const input = normalizeRouteInput(await readJson(request));
     sendJson(response, 201, { data: store.create(input) });
     return;
   }
@@ -51,7 +55,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
   if (mockIdMatch && request.method === 'PUT') {
-    const input = validateRouteInput(await readJson<MockRouteInput>(request));
+    const input = normalizeRouteInput(await readJson(request));
     const route = store.update(decodeURIComponent(mockIdMatch[1]), input);
     if (!route) throw new HttpError(404, 'Mock 路由不存在');
     sendJson(response, 200, { data: route });
@@ -66,16 +70,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (url.pathname === '/api/recordings' && request.method === 'POST') {
-    const input = await readJson<RecordingInput>(request);
-    const normalizedRecording = normalizeRecordingInput(input);
-    sendJson(response, 201, { data: store.record(normalizedRecording) });
+    const input = normalizeRecordingInput(await readJson(request));
+    sendJson(response, 201, { data: store.record(input) });
     return;
   }
 
   if (url.pathname === '/api/replay' && request.method === 'POST') {
-    const replayRequest = await readJson<ReplayRequest>(request);
-    const method = normalizeMethod(replayRequest.method);
-    const route = findMatchingRoute(store.list(), method, replayRequest.path || '/');
+    const replayRequest = normalizeReplayRequest(await readJson(request));
+    const route = findMatchingRoute(store.list(), replayRequest.method, replayRequest.path);
     if (!route) {
       sendJson(response, 404, {
         matched: false,
@@ -99,7 +101,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
   if (url.pathname.startsWith('/mock')) {
     const mockPath = url.pathname.slice('/mock'.length) || '/';
-    const method = normalizeMethod(methodFromRequest(request));
+    const method = normalizeHttpMethod(methodFromRequest(request));
     const route = findMatchingRoute(store.list(), method, mockPath);
     if (!route) {
       sendJson(response, 404, { error: `没有找到 ${method} ${mockPath} 的 Mock 路由` });
@@ -111,67 +113,6 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   sendJson(response, 404, { error: 'Not found' });
-}
-
-function normalizeMethod(method: string): HttpMethod {
-  const normalized = (method || 'GET').toUpperCase() as HttpMethod;
-  if (!allowedMethods.has(normalized)) throw new HttpError(400, `不支持的 HTTP 方法: ${method}`);
-  return normalized;
-}
-
-function validateRouteInput(input: MockRouteInput): MockRouteInput {
-  if (!input || !input.name?.trim()) throw new HttpError(400, 'name 不能为空');
-  const method = normalizeMethod(input.method);
-  const path = normalizePath(input.path);
-  if (!path.startsWith('/')) throw new HttpError(400, 'path 必须以 / 开头');
-  const statusCode = Number(input.statusCode);
-  if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) {
-    throw new HttpError(400, 'statusCode 必须是 100-599 的整数');
-  }
-  return {
-    ...input,
-    name: input.name.trim(),
-    method,
-    path,
-    statusCode,
-    responseHeaders: input.responseHeaders || {},
-    responseBody: input.responseBody || '',
-    description: input.description || ''
-  };
-}
-
-type RecordingInput = {
-  name?: string;
-  request: { method: HttpMethod; path: string };
-  response: { statusCode: number; headers?: Record<string, string>; body?: string };
-};
-
-function normalizeRecordingInput(input: RecordingInput): RecordingInput {
-  if (!input?.request || !input?.response) {
-    throw new HttpError(400, '录制请求必须包含 request 和 response');
-  }
-  if (!input.request.path?.trim()) {
-    throw new HttpError(400, '录制请求的 path 不能为空');
-  }
-  const statusCode = Number(input.response.statusCode);
-  if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) {
-    throw new HttpError(400, '录制响应的 statusCode 必须是 100-599 的整数');
-  }
-  // Defect seed: unlike create/update, method is not normalized or validated
-  // and path is deliberately passed through without canonicalization.
-  return {
-    ...input,
-    request: {
-      method: input.request.method,
-      path: input.request.path
-    },
-    response: {
-      ...input.response,
-      statusCode,
-      headers: input.response.headers || {},
-      body: input.response.body || ''
-    }
-  };
 }
 
 function buildMockResponse(route: { statusCode: number; responseHeaders: Record<string, string>; responseBody: string }) {
@@ -194,8 +135,10 @@ function applyCors(response: ServerResponse): void {
   for (const [key, value] of Object.entries(corsHeaders())) response.setHeader(key, value);
 }
 
-server.listen(port, () => {
-  console.log(`API Mock server listening on http://localhost:${port}`);
-});
+if (process.env.API_MOCK_SERVER_LISTEN !== '0') {
+  server.listen(port, () => {
+    console.log(`API Mock server listening on http://localhost:${port}`);
+  });
+}
 
 export { server, store, handleRequest };

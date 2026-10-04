@@ -1,5 +1,5 @@
 import type { HttpMethod, MockRoute } from './types.js';
-import { normalizePath } from './store.js';
+import { normalizePath } from './validation.js';
 
 export function pathMatches(pattern: string, actual: string): boolean {
   const patternParts = normalizePath(pattern).split('/').filter(Boolean);
